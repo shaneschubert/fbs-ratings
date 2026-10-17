@@ -1,0 +1,52 @@
+# FBS ratings site settings. Edit these, commit, and the next run picks them up.
+
+site:
+  title: "FBS Ratings"            # Site name shown in the header and browser tab
+  tagline: "Elo ratings, playoff odds, and 12-team CFP projections for FBS college football"
+  handle: ""                      # Optional social handle shown in table footers, e.g. "@YourHandle"
+  timezone: "America/Chicago"     # Used for the "Updated" timestamp
+  show_logos: true                # Use team logo URLs supplied by CollegeFootballData.com
+
+season:
+  year: auto                      # "auto" = current season (Aug-Dec = this year, Jan-Jul = last year), or a number like 2026
+  history_start: 2014             # First season used to build Elo history (more seasons = more stable start)
+
+elo:
+  mean: 1500                      # Average FBS rating
+  k: 25                           # How fast ratings move after each game
+  home_field: 55                  # Elo points for home field (about 2.2 points on the scoreboard)
+  offseason_regression: 0.33      # Share of distance to the mean removed between seasons
+  fcs_rating: 1200                # Fixed rating used for any FCS opponent
+  new_team_rating: 1300           # Starting rating for a program new to FBS
+  elo_per_point: 25               # Elo difference equal to 1 point of predicted margin
+
+adjusted_scoring:
+  ridge_lambda: 4.0               # Shrinkage for opponent-adjusted offense/defense (higher = steadier early season)
+
+simulation:
+  runs: 10000                     # Monte Carlo season simulations
+  seed: 2026                      # Fixed seed so a rerun on the same data gives the same odds
+  hot_k_multiplier: 1.0           # Ratings move inside each simulated season (0 = frozen ratings)
+
+conferences:
+  # Names must match CollegeFootballData.com conference names exactly.
+  power: ["ACC", "Big 12", "Big Ten", "SEC"]
+  group_of: ["American Athletic", "Conference USA", "Mid-American", "Mountain West", "Pac-12", "Sun Belt"]
+  independent: "FBS Independents"
+  no_title_game: []               # Conferences that crown the regular season leader instead of playing a title game
+  divisions: []                   # Conferences that send division winners to the title game (uses the team "division" field)
+
+playoff:
+  field_size: 12
+  power_auto_bids: true           # Champions of the four "power" conferences get automatic bids
+  group_of_auto_bids: 1           # Highest-ranked champion among the "group_of" conferences
+  notre_dame_rule: "Notre Dame"   # This team is guaranteed a spot if ranked inside the field size
+  byes: 4                         # Top seeds that skip the first round
+  # Selection committee proxy used inside each simulation:
+  #   score = simulated Elo - loss_penalty x losses + champion_bonus (if conference champion)
+  loss_penalty: 40
+  champion_bonus: 25
+
+games_of_week:
+  count: 5
+  weights: {quality: 0.5, closeness: 0.25, stakes: 0.25}

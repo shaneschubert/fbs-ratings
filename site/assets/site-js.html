@@ -1,0 +1,66 @@
+<script>
+(function () {
+  // Sortable tables: click a header to sort, click again to reverse.
+  document.querySelectorAll("table.sortable").forEach(function (table) {
+    var ths = table.querySelectorAll("thead th");
+    ths.forEach(function (th, col) {
+      th.tabIndex = 0;
+      function go() {
+        var asc = !th.classList.contains("sorted-asc");
+        ths.forEach(function (h) { h.classList.remove("sorted-asc", "sorted-desc"); });
+        th.classList.add(asc ? "sorted-asc" : "sorted-desc");
+        var body = table.tBodies[0];
+        var rows = Array.prototype.slice.call(body.rows);
+        rows.sort(function (a, b) {
+          var x = key(a.cells[col]), y = key(b.cells[col]);
+          if (typeof x === "number" && typeof y === "number") return asc ? x - y : y - x;
+          return asc ? String(x).localeCompare(String(y)) : String(y).localeCompare(String(x));
+        });
+        rows.forEach(function (r) { body.appendChild(r); });
+      }
+      th.addEventListener("click", go);
+      th.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
+    });
+  });
+  function key(td) {
+    if (!td) return "";
+    var v = td.getAttribute("data-v");
+    if (v === null) v = td.textContent.trim();
+    var n = Number(v.replace(/[%<>,+]/g, ""));
+    return v !== "" && !isNaN(n) ? n : v.toLowerCase();
+  }
+
+  // Conference filter and team search on the ratings table.
+  function applyFilters(id) {
+    var table = document.getElementById(id);
+    if (!table) return;
+    var sel = document.querySelector('[data-filter-table="' + id + '"]');
+    var box = document.querySelector('[data-search-table="' + id + '"]');
+    var col = sel ? parseInt(sel.getAttribute("data-filter-col"), 10) : -1;
+    var want = sel ? sel.value : "";
+    var q = box ? box.value.trim().toLowerCase() : "";
+    Array.prototype.forEach.call(table.tBodies[0].rows, function (r) {
+      var ok = true;
+      if (want && r.cells[col].textContent.trim() !== want) ok = false;
+      if (q && r.textContent.toLowerCase().indexOf(q) === -1) ok = false;
+      r.style.display = ok ? "" : "none";
+    });
+  }
+  document.querySelectorAll("[data-filter-table],[data-search-table]").forEach(function (el) {
+    var id = el.getAttribute("data-filter-table") || el.getAttribute("data-search-table");
+    el.addEventListener("input", function () { applyFilters(id); });
+  });
+
+  // Week picker on the schedule page.
+  var weekSel = document.getElementById("week-select");
+  if (weekSel) {
+    function showWeek() {
+      document.querySelectorAll("section.week").forEach(function (s) {
+        s.style.display = s.getAttribute("data-week") === weekSel.value ? "" : "none";
+      });
+    }
+    weekSel.addEventListener("change", showWeek);
+    showWeek();
+  }
+})();
+</script>
