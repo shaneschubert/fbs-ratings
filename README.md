@@ -51,11 +51,12 @@ For real data, set the key first (`set CFBD_API_KEY=yourkey` on Windows, `export
 - `site.title`, `site.tagline`, `site.handle` in `config.yaml`.
 - `conferences`: names must match CFBD exactly. If a conference is missing, the build prints a warning naming it.
 - `playoff.loss_penalty` and `playoff.champion_bonus`: how the simulated committee ranks teams.
-- `elo.k`, `elo.home_field`, `elo.offseason_regression`: how fast and how far ratings move.
+- `tuning.enabled`: when on (default), the build replays past seasons and picks the Elo settings that predicted
+  them best, so the `elo` values in the config are only starting points. Turn it off to use your own values exactly.
 
 ## Data and downloads
 
-Every run publishes CSVs on the Methodology page: ratings with all projection columns, every game with pregame
+Every run publishes CSVs on the Methodology page: model accuracy by season, preseason talent scores, ratings with all projection columns, every game with pregame
 Elo and win chance, full Elo history since 2014, adjusted scoring, this week's playoff leverage by game,
 and a team index (school name, slug, conference, colors, logo URL) as the record of every name mapping.
 

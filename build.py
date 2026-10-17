@@ -7,6 +7,8 @@ Then: quarto render site   (output in site/_site)
 """
 import argparse
 import datetime as dt
+import hashlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -105,12 +107,12 @@ def main():
     print(f"Season {season}")
 
     if args.demo:
-        raw_teams, raw_games = demo.generate(cfg, season)
+        raw_teams, raw_games, raw_talent = demo.generate(cfg, season)
         raw_teams = [cfbd.normalize(t) for t in raw_teams]
         raw_games = [cfbd.normalize(g) for g in raw_games]
     else:
         client = cfbd.CFBDClient(os.environ.get("CFBD_API_KEY", ""), ROOT / "cache")
-        raw_teams, raw_games = cfbd.load_all(client, season, int(cfg["season"]["history_start"]))
+        raw_teams, raw_games, raw_talent = cfbd.load_all(client, season, int(cfg["season"]["history_start"]))
         print(f"API calls this run: {client.calls}")
 
     teams = model.build_teams(raw_teams, cfg)
@@ -122,8 +124,36 @@ def main():
     games = model.build_games(raw_games, set(teams["team"]))
     print(f"{len(teams)} FBS teams, {len(games)} games loaded")
 
-    engine = model.EloEngine(cfg)
-    games, hist = engine.run(games)
+    conf_map = model.season_conferences(games, teams, season, cfg["conferences"]["independent"])
+    talent = model.talent_z(raw_talent)
+    first_scored = int(cfg["season"]["history_start"]) + int(cfg["tuning"]["warmup_seasons"])
+    past = set(range(first_scored, season))
+
+    params = {k: cfg["elo"][k] for k in model.TUNED_KEYS}
+    if cfg["tuning"]["enabled"] and past:
+        sig = hashlib.md5(json.dumps([cfg["elo"], cfg["tuning"], cfg["season"]["history_start"], season,
+                                      args.demo], sort_keys=True).encode()).hexdigest()[:10]
+        cache_file = ROOT / "cache" / f"tuned_{season}_{sig}.json"
+        if cache_file.exists() and not args.demo:
+            params = json.loads(cache_file.read_text())
+            print("Tuning: reused saved settings for this season")
+        else:
+            params = model.tune(cfg, games, conf_map, talent, past)
+            if not args.demo:
+                cache_file.parent.mkdir(exist_ok=True)
+                cache_file.write_text(json.dumps(params))
+    # Fit points-per-Elo on past seasons with the chosen settings
+    _, _, m_past = model.EloEngine(cfg, params, conf_map, talent).run(games, record=False, eval_seasons=past)
+    backtest = model.summarize(m_past)
+    if not np.isnan(backtest["elo_per_point"]):
+        params["elo_per_point"] = round(float(backtest["elo_per_point"]), 2)
+    print("Model settings:", params)
+
+    engine = model.EloEngine(cfg, params, conf_map, talent)
+    games, hist, m_all = engine.run(games, eval_seasons=past | {season})
+    live = model.summarize(m_all, {season})
+    accuracy = {"params": params, "backtest": backtest, "live": live,
+                "seasons": f"{first_scored}-{season - 1}" if past else "none"}
     last_week, next_week = model.week_status(games, season)
     games = model.refresh_upcoming(games, engine, season)
     tt, avg = model.team_table(teams, games, engine, season, last_week)
@@ -148,6 +178,10 @@ def main():
         f"game_leverage_week_{next_week or 'none'}.csv": lev,
         f"team_index_{season}.csv": teams[["team_id", "team", "slug", "abbr", "mascot", "conference", "division",
                                            "color", "logo"]],
+        f"model_accuracy_by_season.csv": pd.DataFrame(
+            [{"season": yr, **model.summarize(m_all, {yr})} for yr in sorted(m_all)]),
+        f"preseason_talent_z.csv": pd.DataFrame(
+            [{"season": yr, "team": t, "talent_z": z} for yr, d in talent.items() for t, z in d.items()]),
     }
     for name, df in files.items():
         df.to_csv(dl / name, index=False)
@@ -156,6 +190,7 @@ def main():
     updated = dt.datetime.now(tz).strftime("%a %b %-d, %-I:%M %p %Z")
     fcs_ovr = float(100 * model.win_prob(engine.fcs - avg))
     ctx = render.Ctx(cfg, tt, games, proj, adj, season, last_week, next_week, updated, fcs_ovr)
+    ctx.accuracy = accuracy
     (SITE / "_quarto.yml").write_text(quarto_yml(cfg))
     render.write_site(ctx, SITE, gotw, lev, hist, list(files))
     print(f"Site pages written to {SITE}. Next: quarto render site")

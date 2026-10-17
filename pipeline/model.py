@@ -94,68 +94,147 @@ def build_games(raw_games, current_fbs: set):
 
 # --------------------------------------------------------------------------- Elo
 
+TUNED_KEYS = ["k", "home_field", "offseason_regression", "talent_weight", "mov_cap"]
+
+
+def season_conferences(games, teams, season, independent):
+    """season -> {team: conference} for FBS teams, from the games themselves (realignment-safe)."""
+    out = {}
+    cols = ["season", "home", "away", "home_conf", "away_conf", "home_fbs", "away_fbs"]
+    for yr, h, a, hc, ac, hf, af in games[cols].itertuples(index=False, name=None):
+        d = out.setdefault(yr, {})
+        if hf and hc and h not in d:
+            d[h] = hc
+        if af and ac and a not in d:
+            d[a] = ac
+    out.setdefault(season, {}).update(dict(zip(teams["team"], teams["conference"])))
+    return out
+
+
+def talent_z(rows):
+    """season -> {team: z-score of talent among teams that season}."""
+    if not rows:
+        return {}
+    df = pd.DataFrame(rows)
+    out = {}
+    for yr, g in df.groupby("season"):
+        sd = g["talent"].std() or 1.0
+        out[int(yr)] = dict(zip(g["team"], (g["talent"] - g["talent"].mean()) / sd))
+    return out
+
+
 class EloEngine:
-    def __init__(self, cfg):
+    def __init__(self, cfg, params=None, conf_map=None, talent=None):
         e = cfg["elo"]
-        self.mean, self.k, self.hfa = e["mean"], e["k"], e["home_field"]
-        self.regress, self.fcs = e["offseason_regression"], e["fcs_rating"]
-        self.new_team, self.per_point = e["new_team_rating"], e["elo_per_point"]
+        p = {k: e[k] for k in TUNED_KEYS}
+        p["elo_per_point"] = e["elo_per_point"]
+        p.update(params or {})
+        self.params = p
+        self.mean, self.fcs, self.new_team = e["mean"], e["fcs_rating"], e["new_team_rating"]
+        self.k, self.hfa = float(p["k"]), float(p["home_field"])
+        self.regress, self.tw = float(p["offseason_regression"]), float(p["talent_weight"])
+        self.mov_cap, self.per_point = float(p["mov_cap"]), float(p["elo_per_point"])
+        self.independent = cfg["conferences"]["independent"]
+        self.conf_map = conf_map or {}
+        self.talent = talent or {}
         self.ratings = {}
-        self.snapshots = {}  # (season, season_type, week) -> ratings at start of that week
+        self.snapshots = {}
 
     def rating(self, team, fbs):
         if not fbs:
             return self.fcs
         return self.ratings.get(team, self.new_team)
 
-    def run(self, games: pd.DataFrame):
-        pre_h, pre_a, wp_h, post_h, post_a = [], [], [], [], []
-        history = []
-        season = None
-        week_key = None
-        for g in games.itertuples(index=False):
-            if g.season != season:
-                if season is not None:
-                    self.ratings = {
-                        t: self.mean + (r - self.mean) * (1 - self.regress) for t, r in self.ratings.items()
-                    }
-                season = g.season
-            key = (g.season, g.season_type, g.week)
-            if key != week_key:
-                self.snapshots[key] = dict(self.ratings)
-                week_key = key
-            rh, ra = self.rating(g.home, g.home_fbs), self.rating(g.away, g.away_fbs)
-            diff = rh - ra + (0 if g.neutral else self.hfa)
-            p = float(win_prob(diff))
-            pre_h.append(rh)
-            pre_a.append(ra)
-            wp_h.append(p)
-            if not g.completed:
-                post_h.append(np.nan)
-                post_a.append(np.nan)
+    def _new_season(self, season):
+        prev = self.ratings
+        confs = self.conf_map.get(season, {})
+        tal = self.talent.get(season, {})
+        sd = float(np.std(list(prev.values()))) if len(prev) > 10 else 200.0
+        groups = {}
+        for t, c in confs.items():
+            if t in prev and c and c != self.independent:
+                groups.setdefault(c, []).append(prev[t])
+        cmean = {c: float(np.mean(v)) for c, v in groups.items() if len(v) >= 4}
+        new = {}
+        for t in set(prev) | set(confs):
+            if t in prev:
+                target = cmean.get(confs.get(t), self.mean)
+                base = target + (prev[t] - target) * (1 - self.regress)
+            elif not prev:
+                base = self.mean
+            else:
+                base = self.new_team
+            z = tal.get(t)
+            if z is not None and self.tw > 0:
+                base = (1 - self.tw) * base + self.tw * (self.mean + sd * z)
+            new[t] = base
+        self.ratings = new
+
+    def run(self, games: pd.DataFrame, record=True, eval_seasons=()):
+        """Play every game in order. Returns (games with pregame Elo, history, metrics by season)."""
+        cols = ["season", "season_type", "week", "date", "game_id", "home", "away", "home_fbs", "away_fbs",
+                "neutral", "completed", "home_pts", "away_pts"]
+        rows = games[cols].itertuples(index=False, name=None)
+        pre_h, pre_a, wp_h, post_h, post_a, history = [], [], [], [], [], []
+        metrics = {}
+        season, week_key = None, None
+        hfa, k, cap, ratings_get = self.hfa, self.k, self.mov_cap, None
+        for yr, stype, wk, date, gid, home, away, hf, af, neutral, done, hp, ap in rows:
+            if yr != season:
+                if season is not None or self.conf_map or self.talent:
+                    self._new_season(yr)
+                season = yr
+            if record:
+                key = (yr, stype, wk)
+                if key != week_key:
+                    self.snapshots[key] = dict(self.ratings)
+                    week_key = key
+            R = self.ratings
+            rh = R.get(home, self.new_team) if hf else self.fcs
+            ra = R.get(away, self.new_team) if af else self.fcs
+            diff = rh - ra + (0.0 if neutral else hfa)
+            p = 1.0 / (1.0 + 10 ** (-diff / 400.0))
+            if record:
+                pre_h.append(rh); pre_a.append(ra); wp_h.append(p)
+            if not done:
+                if record:
+                    post_h.append(np.nan); post_a.append(np.nan)
                 continue
-            margin = g.home_pts - g.away_pts
+            margin = hp - ap
+            if yr in eval_seasons and hf and af and margin != 0:
+                m = metrics.setdefault(yr, [0, 0.0, 0.0, 0, 0.0, 0.0])
+                y = 1.0 if margin > 0 else 0.0
+                pc = min(max(p, 1e-6), 1 - 1e-6)
+                m[0] += 1
+                m[1] -= y * math.log(pc) + (1 - y) * math.log(1 - pc)
+                m[2] += (p - y) ** 2
+                m[3] += (p >= 0.5) == (y == 1.0)
+                m[4] += diff * margin
+                m[5] += diff * diff
             result = 1.0 if margin > 0 else (0.0 if margin < 0 else 0.5)
             winner_diff = diff if margin > 0 else -diff
-            mult = math.log(abs(margin) + 1) * (2.2 / (winner_diff * 0.001 + 2.2)) if margin != 0 else 1.0
-            shift = self.k * mult * (result - p)
-            nh, na = rh + shift, ra - shift
-            if g.home_fbs:
-                self.ratings[g.home] = nh
-                history.append((g.season, g.season_type, g.week, g.date, g.home, rh, nh, g.game_id))
-            if g.away_fbs:
-                self.ratings[g.away] = na
-                history.append((g.season, g.season_type, g.week, g.date, g.away, ra, na, g.game_id))
-            post_h.append(nh if g.home_fbs else np.nan)
-            post_a.append(na if g.away_fbs else np.nan)
+            mult = (math.log(min(abs(margin), cap) + 1) * (2.2 / (winner_diff * 0.001 + 2.2))) if margin else 1.0
+            shift = k * mult * (result - p)
+            if hf:
+                R[home] = rh + shift
+            if af:
+                R[away] = ra - shift
+            if record:
+                post_h.append(rh + shift if hf else np.nan)
+                post_a.append(ra - shift if af else np.nan)
+                if hf:
+                    history.append((yr, stype, wk, date, home, rh, rh + shift, gid))
+                if af:
+                    history.append((yr, stype, wk, date, away, ra, ra - shift, gid))
+        if not record:
+            return None, None, metrics
         games = games.copy()
         games["home_elo_pre"], games["away_elo_pre"] = pre_h, pre_a
         games["home_wp"] = wp_h
         games["home_elo_post"], games["away_elo_post"] = post_h, post_a
-        hist = pd.DataFrame(
-            history, columns=["season", "season_type", "week", "date", "team", "elo_pre", "elo_post", "game_id"]
-        )
-        return games, hist
+        hist = pd.DataFrame(history, columns=["season", "season_type", "week", "date", "team",
+                                              "elo_pre", "elo_post", "game_id"])
+        return games, hist, metrics
 
     def predict(self, home, away, home_fbs, away_fbs, neutral, ratings=None):
         r = ratings if ratings is not None else self.ratings
@@ -163,6 +242,46 @@ class EloEngine:
         ra = r.get(away, self.new_team) if away_fbs else self.fcs
         diff = rh - ra + (0 if neutral else self.hfa)
         return float(win_prob(diff)), diff / self.per_point
+
+
+def summarize(metrics, seasons=None):
+    rows = [m for yr, m in metrics.items() if seasons is None or yr in seasons]
+    n = sum(m[0] for m in rows)
+    if not n:
+        return {"games": 0, "log_loss": np.nan, "brier": np.nan, "accuracy": np.nan, "elo_per_point": np.nan}
+    sxy, sxx = sum(m[4] for m in rows), sum(m[5] for m in rows)
+    return {"games": n, "log_loss": sum(m[1] for m in rows) / n, "brier": sum(m[2] for m in rows) / n,
+            "accuracy": sum(m[3] for m in rows) / n, "elo_per_point": sxx / sxy if sxy > 0 else np.nan}
+
+
+def tune(cfg, games, conf_map, talent, eval_seasons, log=print):
+    """Coordinate descent over the grid in config.yaml, minimizing log loss on past seasons."""
+    grid = cfg["tuning"]["grid"]
+    params = {k: cfg["elo"][k] for k in TUNED_KEYS}
+    cache = {}
+
+    def score(p):
+        key = tuple(p[k] for k in TUNED_KEYS)
+        if key not in cache:
+            eng = EloEngine(cfg, p, conf_map, talent)
+            _, _, m = eng.run(games, record=False, eval_seasons=eval_seasons)
+            cache[key] = summarize(m)["log_loss"]
+        return cache[key]
+
+    best = score(params)
+    start = best
+    for _ in range(int(cfg["tuning"]["passes"])):
+        improved = False
+        for key in TUNED_KEYS:
+            for v in grid.get(key, []):
+                trial = {**params, key: v}
+                s = score(trial)
+                if s < best - 1e-6:
+                    best, params, improved = s, trial, True
+        if not improved:
+            break
+    log(f"Tuning: {len(cache)} settings tried, log loss {start:.4f} -> {best:.4f}")
+    return params
 
 
 def refresh_upcoming(games, engine, season):

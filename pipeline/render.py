@@ -502,24 +502,62 @@ def methodology(ctx, links):
     po = ctx.cfg["playoff"]
     sim = ctx.cfg["simulation"]
     hist = ctx.cfg["season"]["history_start"]
+    acc = getattr(ctx, "accuracy", None) or {}
+    p = acc.get("params", {k: e[k] for k in ("k", "home_field", "offseason_regression", "talent_weight", "mov_cap")})
+    epp = p.get("elo_per_point", e["elo_per_point"])
+    bt, lv = acc.get("backtest", {}), acc.get("live", {})
+
+    def row(label, m):
+        if not m or not m.get("games"):
+            return f"| {label} | 0 | - | - | - |"
+        return (f"| {label} | {m['games']:,} | {m['accuracy'] * 100:.1f}% | {m['log_loss']:.3f} | {m['brier']:.3f} |")
+
+    tuned = ("These settings were chosen automatically: the model replayed every season from "
+             f"{acc.get('seasons', '-')} under many combinations and kept the one whose pregame win chances best matched "
+             "what actually happened (lowest log loss)." if ctx.cfg["tuning"]["enabled"] else
+             "These settings come straight from config.yaml (tuning is turned off).")
+    cap = "no cap" if float(p["mov_cap"]) >= 99 else f"capped at {float(p['mov_cap']):.0f} points"
     return page("Methodology", f"""
 ## Data
 
-Scores and schedules come from the CollegeFootballData.com API. Ratings are built from every FBS game since {hist}.
+Scores, schedules, and roster talent come from the CollegeFootballData.com API. Ratings are built from every FBS
+game since {hist}.
 
 ## Elo ratings
 
 Every FBS team has an Elo rating centered on {e['mean']}. After each game the winner takes points from the loser.
-How many points depends on how surprising the result was and on the margin of victory, with the margin effect
-reduced when a heavy favorite wins big. Home field is worth {e['home_field']} Elo points
-(about {e['home_field'] / e['elo_per_point']:.1f} points on the scoreboard). Neutral site games get no home edge.
+How many points depends on how surprising the result was and on the margin of victory ({cap}), with the margin
+effect reduced when a heavy favorite wins big.
 
-Between seasons each rating moves {e['offseason_regression'] * 100:.0f}% of the way back to the mean.
+| Setting | Value |
+|---|---|
+| Rating change speed (K) | {float(p['k']):g} |
+| Home field | {float(p['home_field']):g} Elo points ({float(p['home_field']) / epp:.1f} points on the scoreboard) |
+| Offseason pull toward conference average | {float(p['offseason_regression']) * 100:.0f}% |
+| Weight on roster talent in preseason rating | {float(p['talent_weight']) * 100:.0f}% |
+| Elo points per point of margin | {epp:g} |
+
+{tuned}
+
+**Preseason ratings.** Between seasons each team moves part of the way toward the average of its own conference
+(using the conference it plays in that season), not toward one league-wide average. That keeps a dominant team in a
+weaker conference from starting the year rated like a playoff team. The result is then blended with the 247 Team
+Talent Composite, scaled to the spread of the ratings.
+
 FCS opponents use a fixed rating of {e['fcs_rating']}. Programs new to FBS start at {e['new_team_rating']}.
 
 **OVR** is the chance a team would beat an average FBS team on a neutral field, times 100.
 
-**Predicted margin** is the Elo difference divided by {e['elo_per_point']}.
+## How accurate is it
+
+FBS vs FBS games only, every pick made before kickoff with the ratings at that moment.
+
+| Games | Count | Picked winner | Log loss | Brier |
+|---|---|---|---|---|
+{row(f"Past seasons ({acc.get('seasons', '-')})", bt)}
+{row(f"This season ({ctx.season})", lv)}
+
+Lower log loss and Brier scores are better. A coin flip scores 0.693 and 0.250.
 
 ## Adjusted offense and defense
 

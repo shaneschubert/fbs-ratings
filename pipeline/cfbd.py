@@ -71,12 +71,32 @@ class CFBDClient:
         return [normalize(t) for t in raw]
 
 
+    def talent(self, year: int, refresh: bool):
+        """247 Team Talent Composite. Returns [] for seasons without data."""
+        try:
+            raw = self._cached(f"talent_{year}", "/talent", {"year": year}, refresh)
+        except requests.HTTPError:
+            return []
+        out = []
+        for t in raw:
+            t = normalize(t)
+            team = t.get("team") or t.get("school")
+            try:
+                val = float(t.get("talent"))
+            except (TypeError, ValueError):
+                continue
+            if team:
+                out.append({"season": year, "team": team, "talent": val})
+        return out
+
+
 def load_all(client: CFBDClient, season: int, history_start: int):
-    """Return (teams for current season, list of game dicts for every season)."""
-    games = []
+    """Return (current teams, games for every season, talent rows for every season)."""
+    games, talent = [], []
     for year in range(history_start, season + 1):
         refresh = year == season
         for stype in ("regular", "postseason"):
             games.extend(client.games(year, stype, refresh))
+        talent.extend(client.talent(year, refresh))
     teams = client.teams(season, refresh=True)
-    return teams, games
+    return teams, games, talent

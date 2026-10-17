@@ -47,10 +47,14 @@ def generate(cfg, season):
     for t in teams:
         by_conf.setdefault(t["conference"], []).append(t["school"])
 
-    games, gid = [], 1
+    conf_of = {t["school"]: t["conference"] for t in teams}
+    games, gid, talent = [], 1, []
     hist = cfg["season"]["history_start"]
     for year in range(max(hist, season - 4), season + 1):
         drift = {k: v + rng.normal(0, 0.35) for k, v in strength.items()}
+        for t in teams:
+            talent.append({"season": year, "team": t["school"],
+                           "talent": 700 + 90 * drift[t["school"]] + rng.normal(0, 40)})
         start = dt.datetime(year, 8, 29, 19, 0)
         current = year == season
         done_through = 7 if current else 99
@@ -91,9 +95,9 @@ def generate(cfg, season):
                     "conferenceGame": cg, "homeTeam": home, "awayTeam": away,
                     "homeClassification": "fcs" if home.startswith("FCS") else "fbs",
                     "awayClassification": "fcs" if away.startswith("FCS") else "fbs",
-                    "homeConference": "", "awayConference": "", "homePoints": hp, "awayPoints": ap,
+                    "homeConference": conf_of.get(home, ""), "awayConference": conf_of.get(away, ""), "homePoints": hp, "awayPoints": ap,
                     "venue": "", "notes": "",
                 })
                 gid += 1
         strength = drift
-    return teams, games
+    return teams, games, talent

@@ -12,13 +12,28 @@ season:
   history_start: 2014             # First season used to build Elo history (more seasons = more stable start)
 
 elo:
+  # k, home_field, offseason_regression, talent_weight, mov_cap are starting values.
+  # When tuning is on, the build replaces them with whatever predicted past seasons best.
   mean: 1500                      # Average FBS rating
   k: 25                           # How fast ratings move after each game
-  home_field: 55                  # Elo points for home field (about 2.2 points on the scoreboard)
-  offseason_regression: 0.33      # Share of distance to the mean removed between seasons
+  home_field: 55                  # Elo points for home field
+  offseason_regression: 0.33      # Share of the gap to the team's own conference average removed between seasons
+  talent_weight: 0.3              # Weight on the 247 roster talent composite in each preseason rating (0 = ignore)
+  mov_cap: 28                     # Margins beyond this many points earn no extra credit
   fcs_rating: 1200                # Fixed rating used for any FCS opponent
   new_team_rating: 1300           # Starting rating for a program new to FBS
-  elo_per_point: 25               # Elo difference equal to 1 point of predicted margin
+  elo_per_point: 25               # Elo difference equal to 1 point of margin (re-fit from data when tuning is on)
+
+tuning:
+  enabled: true                   # Pick the elo settings that best predicted past seasons
+  warmup_seasons: 2               # Seasons after history_start used only to settle ratings, not scored
+  passes: 3                       # Rounds of one-setting-at-a-time search
+  grid:
+    k: [15, 20, 25, 30, 35, 40, 50]
+    home_field: [35, 45, 55, 65, 75]
+    offseason_regression: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+    talent_weight: [0.0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9]
+    mov_cap: [14, 21, 28, 35, 99]
 
 adjusted_scoring:
   ridge_lambda: 4.0               # Shrinkage for opponent-adjusted offense/defense (higher = steadier early season)
